@@ -92,3 +92,7 @@ A healthy run prints `_Update_Full : 2040000` (about 2 s) on serial at 115200 ba
 `test/` is the first working version of the display on an STM32 Nucleo F411RE,
 including notes on the three bugs that cost the most time. See `test/README.md`.
 The STM32 SPI workaround described there is not needed on the ESP32.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
