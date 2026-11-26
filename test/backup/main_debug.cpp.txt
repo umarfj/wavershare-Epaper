@@ -1,0 +1,94 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <GxEPD2_BW.h>
+extern "C" {
+#include "PeripheralPins.h"
+#include "pinmap.h"
+}
+
+#include <Fonts/FreeMonoBold12pt7b.h>
+#include <Fonts/FreeMonoBold18pt7b.h>
+
+// Wiring (Nucleo F411RE Arduino header):
+//  SDA->D11 (PA7 SPI1 MOSI)  SCL->D13 (PA5 SPI1 SCK)
+//  CS->D10  D/C->D9  RES->D8  BUSY->D7
+#define EPD_CS   PB6
+#define EPD_DC   PC7
+#define EPD_RST  PA9
+#define EPD_BUSY PA8
+
+// Dedicated SPI1 on PA7 (MOSI), PA6 (MISO, unused), PA5 (SCK)
+SPIClass* epdSPI;
+
+// WeAct 3.7" 240x416 (UC8253) = GDEY037T03
+GxEPD2_BW<GxEPD2_370_GDEY037T03, GxEPD2_370_GDEY037T03::HEIGHT> display(
+    GxEPD2_370_GDEY037T03(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+static void spiState(const char* tag) {
+  Serial.print(tag);
+  Serial.print(": APB2ENR="); Serial.print(RCC->APB2ENR, HEX);
+  Serial.print(" SPI1.CR1="); Serial.print(SPI1->CR1, HEX);
+  Serial.print(" SR="); Serial.println(SPI1->SR, HEX);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(4000);
+  epdSPI = new SPIClass(pinNametoDigitalPin(PA_7), pinNametoDigitalPin(PA_6), pinNametoDigitalPin(PA_5), PNUM_NOT_DEFINED);
+  Serial.println("--- pin diag ---");
+  Serial.print("PA7 num="); Serial.print(pinNametoDigitalPin(PA_7));
+  Serial.print(" back="); Serial.println((int)digitalPinToPinName(pinNametoDigitalPin(PA_7)), HEX);
+  Serial.print("MOSI periph="); Serial.println((uint32_t)pinmap_peripheral(PA_7, PinMap_SPI_MOSI), HEX);
+  Serial.print("MISO periph="); Serial.println((uint32_t)pinmap_peripheral(PA_6, PinMap_SPI_MISO), HEX);
+  Serial.print("SCLK periph="); Serial.println((uint32_t)pinmap_peripheral(PA_5, PinMap_SPI_SCLK), HEX);
+  // Core only inits SPI when settings differ from stored defaults, so force a different request first
+  epdSPI->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  epdSPI->endTransaction();
+  Serial.print("after begin: APB2ENR="); Serial.print(RCC->APB2ENR, HEX); Serial.print(" CR1="); Serial.println(SPI1->CR1, HEX);
+  display.epd2.selectSPI(*epdSPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  Serial.println("Starting e-paper test");
+  uint32_t csr = RCC->CSR;
+  Serial.print("Reset flags: ");
+  if (csr & RCC_CSR_BORRSTF) Serial.print("BOR/POR ");
+  if (csr & RCC_CSR_PINRSTF) Serial.print("PIN ");
+  if (csr & RCC_CSR_PORRSTF) Serial.print("POR ");
+  if (csr & RCC_CSR_SFTRSTF) Serial.print("SOFT ");
+  if (csr & RCC_CSR_IWDGRSTF) Serial.print("IWDG ");
+  if (csr & RCC_CSR_WWDGRSTF) Serial.print("WWDG ");
+  Serial.println();
+  RCC->CSR |= RCC_CSR_RMVF;
+  pinMode(EPD_BUSY, INPUT);
+  spiState("before init");
+  Serial.print("BUSY before init: "); Serial.println(digitalRead(EPD_BUSY));
+  display.init(115200, true, 10, false);
+  spiState("after init");
+  Serial.print("BUSY after init: "); Serial.println(digitalRead(EPD_BUSY));
+  // clear residue: white, black, white
+  display.setRotation(1);
+  for (int i = 0; i < 3; i++) {
+    uint16_t c = (i == 1) ? GxEPD_BLACK : GxEPD_WHITE;
+    display.setFullWindow();
+    Serial.print("starting cycle "); Serial.println(i); spiState("pre-cycle");
+    display.firstPage();
+    do { display.fillScreen(c); Serial.println(" page buffered, refreshing"); spiState("pre-nextPage"); } while (display.nextPage());
+    Serial.print("cycle "); Serial.print(i); Serial.print(" done, BUSY="); Serial.println(digitalRead(EPD_BUSY));
+  }
+  display.setRotation(1);  // landscape 416x240
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    display.setFont(&FreeMonoBold18pt7b);
+    int16_t x1, y1; uint16_t w, h;
+    const char* msg = "HELLO MY WORLD";
+    display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+    display.setCursor((display.width() - w) / 2 - x1, (display.height() - h) / 2 - y1);
+    display.print(msg);
+    display.drawRect(2, 2, display.width() - 4, display.height() - 4, GxEPD_BLACK);
+  } while (display.nextPage());
+  display.hibernate();
+  Serial.println("Done");
+}
+
+void loop() {}

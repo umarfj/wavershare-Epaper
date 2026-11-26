@@ -1,0 +1,133 @@
+// WeAct 3.7" e-paper (240x416, UC8253) on STM32 Nucleo F411RE
+// Rolling cat animation (hello-world version in backup/main_hello.cpp.txt).
+// Known-good. READ README.md BEFORE CHANGING THE SPI SETUP BELOW.
+//
+// Wiring (display -> Nucleo):
+//   VCC->3V3  GND->GND  SDA->D11(PA7,MOSI)  SCL->D13(PA5,SCK)
+//   CS->D10(PB6)  D/C->D9(PC7)  RES->D8(PA9)  BUSY->D7(PA8)
+#include <Arduino.h>
+#include <SPI.h>
+#include <GxEPD2_BW.h>
+
+// Use STM32 port names (PBx), NOT Dx: PlatformIO builds the *generic* F411
+// variant here, where Dx / default SPI pins are not the Nucleo header.
+#define EPD_CS   PB6
+#define EPD_DC   PC7
+#define EPD_RST  PA9
+#define EPD_BUSY PA8
+
+SPIClass* epdSPI;
+
+// WeAct 3.7" 240x416 = UC8253 = GDEY037T03 (NOT GxEPD2_370_TC1, that is a
+// different 280x480 Waveshare panel and will give lines / gray / no image).
+GxEPD2_BW<GxEPD2_370_GDEY037T03, GxEPD2_370_GDEY037T03::HEIGHT> display(
+    GxEPD2_370_GDEY037T03(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
+
+static void fullClear();
+
+void setup() {
+  // Explicit SPI1 pins, built from STM32 port names.
+  epdSPI = new SPIClass(pinNametoDigitalPin(PA_7), pinNametoDigitalPin(PA_6),
+                        pinNametoDigitalPin(PA_5), PNUM_NOT_DEFINED);
+  // REQUIRED WORKAROUND: the core only calls spi_init() when requested settings
+  // differ from the stored defaults (4 MHz, MSB, mode 0). The display driver
+  // asks for exactly those, so SPI would never start (clock off, hang in
+  // spi_transfer). Request something different once to force the init.
+  epdSPI->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  epdSPI->endTransaction();
+  display.epd2.selectSPI(*epdSPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
+
+  display.init(0);
+  display.setRotation(1);   // landscape 416x240
+  fullClear();
+}
+
+// ---- Rolling cat animation ----
+const int GROUND_Y  = 199;
+const int BAND_Y    = 64;    // partial-refresh strip (full width)
+const int BAND_H    = 152;
+const float R_ROLL  = 30.0f; // body radius, also the rolling radius
+const int CY        = GROUND_Y - (int)R_ROLL;
+
+static float gc, gs;
+static int gcx;
+static void P(float px, float py, int16_t &x, int16_t &y) {  // rotate local point, translate
+  x = gcx + (int16_t)lroundf(px * gc - py * gs);
+  y = CY  + (int16_t)lroundf(px * gs + py * gc);
+}
+static void thickLine(float ax, float ay, float bx, float by, int r, uint16_t col) {
+  int n = 8;
+  for (int i = 0; i <= n; i++) {
+    int16_t x, y;
+    P(ax + (bx - ax) * i / n, ay + (by - ay) * i / n, x, y);
+    display.fillCircle(x, y, r, col);
+  }
+}
+static void tri(float x0, float y0, float x1, float y1, float x2, float y2, uint16_t col) {
+  int16_t a, b, c, d, e, f;
+  P(x0, y0, a, b); P(x1, y1, c, d); P(x2, y2, e, f);
+  display.fillTriangle(a, b, c, d, e, f, col);
+}
+
+static void drawCat(int cx, float angle) {
+  gcx = cx; gc = cosf(angle); gs = sinf(angle);
+  int16_t x, y;
+  P(0, 0, x, y);
+  display.fillCircle(x, y, (int)R_ROLL, GxEPD_BLACK);                // body
+  // white stripes near the rim so the rotation is visible
+  for (int k = 0; k < 4; k++) {
+    float a = k * 1.5708f + 0.6f;
+    thickLine(cosf(a) * 14, sinf(a) * 14, cosf(a) * 25, sinf(a) * 25, 1, GxEPD_WHITE);
+  }
+  // tail
+  thickLine(26, 14, 40, 24, 3, GxEPD_BLACK);
+  thickLine(40, 24, 52, 10, 3, GxEPD_BLACK);
+  thickLine(52, 10, 49, -6, 3, GxEPD_BLACK);
+  // head + ears
+  P(0, -33, x, y);
+  display.fillCircle(x, y, 16, GxEPD_BLACK);
+  tri(-16, -38, -6, -46, -17, -57, GxEPD_BLACK);
+  tri( 16, -38,  6, -46,  17, -57, GxEPD_BLACK);
+  // face
+  P(-6, -35, x, y); display.fillCircle(x, y, 3, GxEPD_WHITE);
+  P( 6, -35, x, y); display.fillCircle(x, y, 3, GxEPD_WHITE);
+  P(-6, -35, x, y); display.fillCircle(x, y, 1, GxEPD_BLACK);
+  P( 6, -35, x, y); display.fillCircle(x, y, 1, GxEPD_BLACK);
+  int16_t x2, y2;
+  P(-1.5f, -28, x, y); P(1.5f, -28, x2, y2);
+  display.drawLine(x, y, x2, y2, GxEPD_WHITE);                        // nose
+}
+
+static void fullClear() {
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.drawFastHLine(0, GROUND_Y + 1, display.width(), GxEPD_BLACK);
+  } while (display.nextPage());
+}
+
+static void frame(int cx, float angle) {
+  display.setPartialWindow(0, BAND_Y, display.width(), BAND_H);
+  display.firstPage();
+  do {
+    display.fillRect(0, BAND_Y, display.width(), BAND_H, GxEPD_WHITE);
+    display.drawFastHLine(0, GROUND_Y + 1, display.width(), GxEPD_BLACK);
+    drawCat(cx, angle);
+  } while (display.nextPage());
+}
+
+void loop() {
+  const int step = 16;                       // px per frame
+  const int xmin = 70, xmax = display.width() - 70;
+  float angle = 0;
+  for (int cx = xmin; cx <= xmax; cx += step) {   // roll right (clockwise)
+    angle += step / R_ROLL;
+    frame(cx, angle);
+  }
+  for (int cx = xmax; cx >= xmin; cx -= step) {   // roll back left
+    angle -= step / R_ROLL;
+    frame(cx, angle);
+  }
+  fullClear();                               // wipe partial-refresh ghosting
+}

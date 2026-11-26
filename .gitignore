@@ -1,0 +1,13 @@
+# Build output and caches
+.pio/
+__pycache__/
+*.pyc
+gui_err.txt
+
+# Personal photos, camera captures and previews generated while testing
+esp32_test/cam_test/*.jpg
+esp32_test/cam_test/*.png
+test/image.png
+test/image copy.png
+test/tools/photo_preview.png
+test/src/photo.h
